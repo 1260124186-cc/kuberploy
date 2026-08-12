@@ -1,0 +1,25 @@
+bootstrap:
+  argoCD:
+    enabled: true
+    mode: adopted
+
+source:
+  chartRepository: ghcr.io/kuberploy/charts
+  valuesRepository: https://github.com/kuberploy/kuberploy.git
+  valuesRevision: "v0.1.0-rc.83"
+
+components:
+  edge:
+    enabled: true
+    mode: adopted
+    adoptionConfirmed: true
+    expectedPackageVersion: 0.1.0-rc.83
+    valueFiles: []
+
+argoCD:
+  argoFoundation:
+    argoCD:
+      managed: false
+      adoptExisting: true
+      crdsPreinstalledByParent: false
+      capabilitiesConfirmed: true

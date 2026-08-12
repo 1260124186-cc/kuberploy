@@ -1,0 +1,110 @@
+# Kuberploy managed platform installer values.
+#
+# Fill both CIDR lists before use. They must contain exact /32 or /128 hosts:
+# the Kubernetes Service/API endpoints and the HTTPS endpoints Argo needs.
+# repositoryEgressCIDRs must include both the current GitHub `git` ranges for
+# the values source and the current GitHub `packages` ranges for GHCR charts.
+bootstrap:
+  valkey:
+    enabled: true
+  argoCD:
+    enabled: true
+    mode: managed
+    managedPrerequisitesConfirmed: true
+  controlPlaneToken:
+    mode: generated
+    kubeAPIServerCIDRs: []
+
+cluster:
+  kubeAPIServerCIDRs: []
+
+source:
+  chartRepository: ghcr.io/kuberploy/charts
+  valuesRepository: https://github.com/kuberploy/kuberploy.git
+  valuesRevision: v0.1.0-rc.83
+
+publicEndpoint:
+  enabled: false
+  hostname: ""
+  tls:
+    enabled: false
+    secretName: ""
+    clusterIssuerName: ""
+    # Required when TLS is enabled; for example, platform-ops@example.com.
+    accountEmail: ""
+
+integrations:
+  github:
+    enabled: false
+    appID: 0
+    clientID: ""
+    appSlug: ""
+    secretName: ""
+    clusterID: ""
+    controlPlaneEgressCIDRs: []
+    sourceEgressCIDRs: []
+    registryEgressCIDRs: []
+  registry:
+    enabled: false
+    authSecretName: ""
+    secretRevision: ""
+    exposureMode: internal
+    endpoint: ""
+    tlsSecretName: ""
+    clusterIssuerName: ""
+    loadBalancer:
+      annotations: {}
+      class: ""
+      ip: ""
+      sourceRanges: []
+
+components:
+  controlPlane:
+    enabled: true
+    mode: managed
+    adoptionConfirmed: false
+    expectedPackageVersion: 0.1.0-rc.83
+    valueFiles: []
+  postgresql:
+    enabled: true
+    mode: managed
+    adoptionConfirmed: false
+    expectedPackageVersion: 0.1.0-rc.83
+    valueFiles:
+      - examples/installer/postgresql.yaml
+  valkey:
+    enabled: true
+    mode: managed
+    adoptionConfirmed: false
+    expectedPackageVersion: 0.1.0-rc.83
+    valueFiles: []
+  edge:
+    enabled: true
+    mode: managed
+    adoptionConfirmed: false
+    expectedPackageVersion: 0.1.0-rc.83
+    valueFiles: []
+  certManager:
+    enabled: true
+    mode: managed
+    adoptionConfirmed: false
+    expectedPackageVersion: 0.1.0-rc.83
+    valueFiles: []
+  sealedSecrets:
+    enabled: true
+    mode: managed
+    adoptionConfirmed: false
+    expectedPackageVersion: 0.1.0-rc.83
+    valueFiles: []
+  monitoring:
+    enabled: true
+    mode: managed
+    adoptionConfirmed: false
+    expectedPackageVersion: 0.1.0-rc.83
+    valueFiles: []
+
+argoCD:
+  argoFoundation:
+    networkPolicy:
+      kubeAPIServerCIDRs: []
+      repositoryEgressCIDRs: []

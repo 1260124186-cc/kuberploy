@@ -1,0 +1,6 @@
+argoFoundation:
+  argoCD:
+    managed: false
+    adoptExisting: true
+    crdsPreinstalledByParent: false
+    capabilitiesConfirmed: true

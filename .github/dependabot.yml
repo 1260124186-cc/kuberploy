@@ -1,0 +1,49 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      go-runtime:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    versioning-strategy: increase-if-necessary
+    open-pull-requests-limit: 10
+    groups:
+      web-runtime:
+        dependency-type: production
+      web-tooling:
+        dependency-type: development
+    ignore:
+      # Keep types on the explicitly selected Node 26 runtime line.
+      - dependency-name: "@types/node"
+        versions: [">=27"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+
+  - package-ecosystem: docker
+    directory: /web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    ignore:
+      # Move the frontend builder only when the selected production line
+      # changes and the complete toolchain matrix has passed.
+      - dependency-name: node
+        versions: [">=27"]

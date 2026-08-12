@@ -1,0 +1,324 @@
+{{- include "kuberploy-installer.validate" . -}}
+{{- $root := . -}}
+{{- $catalog := list
+  (dict "key" "controlPlane" "application" "kuberploy-control-plane" "chart" "kuberploy" "release" "kuberploy" "namespace" "kuberploy-system" "wave" "20")
+  (dict "key" "postgresql" "application" "kuberploy-postgresql" "chart" "kuberploy-postgresql" "release" "postgresql" "namespace" "kuberploy-system" "wave" "0")
+  (dict "key" "edge" "application" "kuberploy-edge" "chart" "kuberploy-edge" "release" "edge" "namespace" "kuberploy-system" "wave" "0")
+  (dict "key" "certManager" "application" "kuberploy-cert-manager" "chart" "kuberploy-cert-manager" "release" "cert" "namespace" "cert-manager" "wave" "5")
+  (dict "key" "externalDNS" "application" "kuberploy-external-dns" "chart" "kuberploy-external-dns" "release" "dns" "namespace" "kuberploy-system" "wave" "10")
+  (dict "key" "externalSecrets" "application" "kuberploy-external-secrets" "chart" "kuberploy-external-secrets" "release" "external-secrets" "namespace" "external-secrets" "wave" "0")
+  (dict "key" "sealedSecrets" "application" "kuberploy-sealed-secrets" "chart" "kuberploy-sealed-secrets" "release" "sealed-secrets" "namespace" "sealed-secrets" "wave" "0")
+  (dict "key" "monitoring" "application" "kuberploy-monitoring" "chart" "kuberploy-monitoring" "release" "monitoring" "namespace" "kuberploy-monitoring" "wave" "-10")
+  (dict "key" "builder" "application" "kuberploy-builder" "chart" "kuberploy-builder" "release" "builder" "namespace" "kuberploy-system" "wave" "10")
+  (dict "key" "registry" "application" "kuberploy-registry" "chart" "kuberploy-registry" "release" "registry" "namespace" "kuberploy-system" "wave" "10")
+-}}
+{{- range $item := $catalog -}}
+{{- $component := get $root.Values.components $item.key -}}
+{{- $builderEmbeddedInControlPlane := and (eq $item.key "builder") $root.Values.integrations.github.enabled -}}
+{{- if $component.enabled -}}
+{{- if $root.Capabilities.APIVersions.Has "argoproj.io/v1alpha1/Application" -}}
+{{- $existing := lookup "argoproj.io/v1alpha1" "Application" "argocd" $item.application -}}
+{{- if $existing -}}
+  {{- $existingMode := dig "metadata" "annotations" "kuberploy.io/installation-mode" "" $existing -}}
+  {{- if and (ne $existingMode "") (ne $existingMode $component.mode) -}}
+    {{- fail (printf "%s installation mode is immutable; decommission or migrate the existing Application explicitly" $item.application) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $childValues := include "kuberploy-installer.modeFence" (list $item.key $component.mode) | fromYaml -}}
+{{- if $builderEmbeddedInControlPlane -}}
+  {{- $childValues = mergeOverwrite $childValues (dict "enabled" false) -}}
+{{- end -}}
+{{- if and (eq $item.key "controlPlane") $root.Values.components.valkey.enabled (eq $root.Values.components.valkey.mode "managed") -}}
+  {{- $managedValkey := dict "config" (dict "valkey" (dict
+    "mode" "managed"
+    "secretRef" (dict
+      "name" "kuberploy-valkey"
+      "addressesKey" "addresses"
+      "usernameKey" "username"
+      "passwordKey" "password"
+      "apiCacheUsernameKey" "api-cache-username"
+      "apiCachePasswordKey" "api-cache-password"
+      "apiLimiterUsernameKey" "api-limiter-username"
+      "apiLimiterPasswordKey" "api-limiter-password"
+      "publisherUsernameKey" "outbox-publisher-username"
+      "publisherPasswordKey" "outbox-publisher-password"
+      "consumerUsernameKey" "worker-consumer-username"
+      "consumerPasswordKey" "worker-consumer-password"
+    ))) -}}
+  {{- $childValues = mergeOverwrite $childValues $managedValkey -}}
+{{- end -}}
+{{- if eq $item.key "controlPlane" -}}
+  {{- $token := $root.Values.bootstrap.controlPlaneToken -}}
+  {{- $bootstrapValues := dict "config" (dict "bootstrapSecret" (dict "generate" (eq $token.mode "generated"))) -}}
+  {{- if eq $token.mode "generated" -}}
+    {{- $_ := set $bootstrapValues "networkPolicy" (dict "kubeAPIServerCIDRs" $token.kubeAPIServerCIDRs) -}}
+  {{- end -}}
+  {{- $childValues = mergeOverwrite $childValues $bootstrapValues -}}
+{{- end -}}
+{{- if and (eq $item.key "controlPlane") $root.Values.publicEndpoint.enabled -}}
+  {{- $public := $root.Values.publicEndpoint -}}
+  {{- $scheme := ternary "https" "http" $public.tls.enabled -}}
+  {{- $endpointValues := dict
+    "config" (dict "publicURL" (printf "%s://%s" $scheme $public.hostname))
+    "ingress" (dict
+      "enabled" true
+      "className" "traefik"
+      "host" $public.hostname
+      "tls" (dict "enabled" $public.tls.enabled "secretName" $public.tls.secretName "issuerName" $public.tls.clusterIssuerName)
+    )
+  -}}
+  {{- $childValues = mergeOverwrite $childValues $endpointValues -}}
+{{- end -}}
+{{- if eq $item.key "edge" -}}
+  {{- $childValues = mergeOverwrite $childValues (dict "edge" (dict "networkPolicy" (dict "kubeAPIServerCIDRs" $root.Values.cluster.kubeAPIServerCIDRs))) -}}
+{{- else if eq $item.key "certManager" -}}
+  {{- $childValues = mergeOverwrite $childValues (dict "foundation" (dict "networkPolicy" (dict "kubeAPIServerCIDRs" $root.Values.cluster.kubeAPIServerCIDRs))) -}}
+  {{- if $root.Values.publicEndpoint.tls.enabled -}}
+    {{- $issuer := dict
+      "enabled" true
+      "name" $root.Values.publicEndpoint.tls.clusterIssuerName
+      "email" $root.Values.publicEndpoint.tls.accountEmail
+      "server" "https://acme-v02.api.letsencrypt.org/directory"
+      "privateKeySecretName" (printf "%s-account" $root.Values.publicEndpoint.tls.clusterIssuerName)
+      "dns01Profiles" (list)
+    -}}
+    {{- $childValues = mergeOverwrite $childValues (dict "foundation" (dict "issuers" (dict "production" $issuer))) -}}
+  {{- end -}}
+{{- else if eq $item.key "externalDNS" -}}
+  {{- $childValues = mergeOverwrite $childValues (dict "foundation" (dict "networkPolicy" (dict "kubeAPIServerCIDRs" $root.Values.cluster.kubeAPIServerCIDRs))) -}}
+{{- else if eq $item.key "externalSecrets" -}}
+  {{- $childValues = mergeOverwrite $childValues (dict "secretFoundation" (dict "networkPolicy" (dict "kubeAPIServerCIDRs" $root.Values.cluster.kubeAPIServerCIDRs))) -}}
+{{- else if eq $item.key "sealedSecrets" -}}
+  {{- $childValues = mergeOverwrite $childValues (dict "secretFoundation" (dict "networkPolicy" (dict "kubeAPIServerCIDRs" $root.Values.cluster.kubeAPIServerCIDRs))) -}}
+{{- end -}}
+{{- if and (eq $item.key "controlPlane") $root.Values.components.monitoring.enabled -}}
+  {{- $monitoringValues := dict
+    "config" (dict "monitoring" (dict "mode" "managed" "prometheusURL" "http://prometheus-operated.kuberploy-monitoring.svc:9090" "bearerTokenSecret" (dict "name" "" "key" "token")))
+    "networkPolicy" (dict "kubeAPIServerCIDRs" $root.Values.cluster.kubeAPIServerCIDRs)
+  -}}
+  {{- $childValues = mergeOverwrite $childValues $monitoringValues -}}
+{{- end -}}
+{{- if and (eq $item.key "controlPlane") $root.Values.integrations.github.enabled -}}
+  {{- $github := $root.Values.integrations.github -}}
+  {{- $githubValues := dict
+    "config" (dict
+      "githubApp" (dict "enabled" true "appID" $github.appID "clientID" $github.clientID "appSlug" $github.appSlug "secretRef" (dict "name" $github.secretName))
+      "buildLogs" (dict "enabled" true)
+      "gitProjection" (dict "enabled" true "chartVersion" $component.expectedPackageVersion)
+      "platformGitBinding" (dict "enabled" true "bindingID" $github.platformBindingID "clusterID" $github.clusterID)
+      "argoObservation" (dict "enabled" true "namespace" $github.argoNamespace "pollIntervalSeconds" 30)
+      "environmentFoundation" (dict "enabled" true "platformBindingID" $github.platformBindingID "clusterID" $github.clusterID "psaVersion" $github.psaVersion "pollIntervalSeconds" 1)
+      "argoDesiredState" (dict "enabled" true "platformBindingID" $github.platformBindingID "clusterID" $github.clusterID "namespace" $github.argoNamespace "runtimeChartRepository" "oci://ghcr.io/kuberploy/charts" "runtimeChartVersion" $component.expectedPackageVersion "runtimeChartDigest" $github.runtimeChartDigest "pollIntervalSeconds" 1 "catalogMaxAgeSeconds" 900)
+      "autoDeploy" (dict "enabled" true)
+    )
+    "builder" (dict "enabled" true "buildKitImage" $github.buildKitImage "networkPolicy" (dict "sourceEgressCIDRs" $github.sourceEgressCIDRs "registryEgressCIDRs" $github.registryEgressCIDRs))
+    "networkPolicy" (dict "kubeAPIServerCIDRs" $root.Values.cluster.kubeAPIServerCIDRs "externalEgressCIDRs" $github.controlPlaneEgressCIDRs)
+    "rbac" (dict "argoNamespace" $github.argoNamespace)
+  -}}
+  {{- $childValues = mergeOverwrite $childValues $githubValues -}}
+{{- end -}}
+{{- if and (eq $item.key "controlPlane") $root.Values.integrations.registry.enabled -}}
+  {{- $registry := $root.Values.integrations.registry -}}
+  {{- $registryConfigIdentity := dict "authMode" "htpasswd" "authRealm" "kuberploy-registry" "port" 5000 "tls" true -}}
+  {{- $registryConfigMap := printf "registry-config-%s" (toJson $registryConfigIdentity | sha256sum | trunc 12) -}}
+  {{- $externalEgress := $registry.controlPlaneEgressCIDRs -}}
+  {{- if $root.Values.integrations.github.enabled -}}
+    {{- $externalEgress = concat $root.Values.integrations.github.controlPlaneEgressCIDRs $externalEgress | uniq | sortAlpha -}}
+  {{- end -}}
+  {{- $managedRegistryValues := dict
+    "config" (dict "managedRegistry" (dict
+      "enabled" true
+      "targetID" $registry.targetID
+      "targetName" $registry.targetName
+      "endpoint" (printf "https://%s" $registry.endpoint)
+      "repositoryPrefix" $registry.repositoryPrefix
+      "pullCredentialRef" $registry.pullCredentialRef
+      "pushCredentialRef" $registry.pushCredentialRef
+      "cacheCredentialRef" $registry.cacheCredentialRef
+      "lifecycleCredentialRef" $registry.lifecycleCredentialRef
+      "allowPlainHTTP" false
+      "namespace" "kuberploy-system"
+      "deployment" "registry"
+      "persistentVolumeClaim" "registry"
+      "registryConfigMap" $registryConfigMap
+      "credentialSecret" (dict "name" $registry.lifecycleCredentialSecretName "usernameKey" "username" "passwordKey" "password")
+      "observationIntervalSeconds" 300
+    ))
+    "networkPolicy" (dict "kubeAPIServerCIDRs" $root.Values.cluster.kubeAPIServerCIDRs "externalEgressCIDRs" $externalEgress)
+  -}}
+  {{- $childValues = mergeOverwrite $childValues $managedRegistryValues -}}
+{{- end -}}
+{{- if and (eq $item.key "controlPlane") $root.Values.integrations.registry.runtimePull.enabled -}}
+  {{- $pull := $root.Values.integrations.registry.runtimePull -}}
+  {{- $pullValues := dict "config" (dict "runtimeRegistryPulls" (dict
+    "enabled" true
+    "namespaces" $pull.namespaces
+    "profiles" (list (dict
+      "name" $pull.profileName
+      "targetId" $pull.targetID
+      "registryServer" $root.Values.integrations.registry.endpoint
+      "credentialRef" $pull.credentialRef
+      "revision" $pull.revision
+      "sourceSecretRef" $pull.sourceSecretName
+      "sourceSecretKey" $pull.sourceSecretKey
+    ))
+    "pollIntervalSeconds" 30
+    "workLeaseSeconds" 120
+    "heartbeatSeconds" 20
+    "readinessSeconds" 90
+    "minimumBackoffSeconds" 5
+    "maximumBackoffSeconds" 300
+  )) -}}
+  {{- $childValues = mergeOverwrite $childValues $pullValues -}}
+{{- end -}}
+{{- if and (eq $item.key "builder") $root.Values.integrations.github.enabled -}}
+  {{- $childValues = mergeOverwrite $childValues (dict "buildKitImage" $root.Values.integrations.github.buildKitImage) -}}
+{{- end -}}
+{{- if and (eq $item.key "registry") $root.Values.integrations.registry.enabled -}}
+  {{- $registry := $root.Values.integrations.registry -}}
+  {{- $registryValues := dict
+    "auth" (dict "mode" "htpasswd" "existingSecret" $registry.authSecretName "secretRevision" $registry.secretRevision)
+    "exposure" (dict "mode" $registry.exposureMode "endpoint" $registry.endpoint "ingressClassName" "traefik" "secretName" $registry.tlsSecretName "clusterIssuerName" $registry.clusterIssuerName "loadBalancer" $registry.loadBalancer)
+    "networkPolicy" (dict "enabled" true "allowedNamespaces" (list "kuberploy-build-dind" "kuberploy-system"))
+  -}}
+  {{- $childValues = mergeOverwrite $childValues $registryValues -}}
+{{- end -}}
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: {{ $item.application }}
+  namespace: argocd
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "kuberploy-installer.labels" $root | nindent 4 }}
+spec:
+  sourceRepos:
+    - {{ $root.Values.source.chartRepository | quote }}
+    - {{ $root.Values.source.valuesRepository | quote }}
+  destinations:
+    - server: https://kubernetes.default.svc
+      namespace: {{ $item.namespace }}
+    {{- if eq $item.key "certManager" }}
+    # cert-manager's upstream leader-election Roles live in kube-system.
+    - server: https://kubernetes.default.svc
+      namespace: kube-system
+    {{- end }}
+    {{- if and (eq $item.key "edge") $root.Values.components.monitoring.enabled }}
+    # The managed edge release owns one exact protected Traefik ServiceMonitor
+    # in the monitoring namespace. Monitoring installs its CRDs in an earlier
+    # sync wave, and the edge Project has no other cross-namespace destination.
+    - server: https://kubernetes.default.svc
+      namespace: kuberploy-monitoring
+    {{- end }}
+    {{- if and (eq $item.key "controlPlane") $root.Values.components.monitoring.enabled }}
+    # Managed monitoring attestation uses exact read-only Roles in its fixed
+    # namespace; the control-plane Project must permit those named objects.
+    - server: https://kubernetes.default.svc
+      namespace: kuberploy-monitoring
+    {{- end }}
+    {{- if and (eq $item.key "controlPlane") $root.Values.components.certManager.enabled }}
+    # Certificate-issuer readiness uses exact read-only Roles and RoleBindings
+    # in cert-manager; the control-plane Project must permit those named objects.
+    - server: https://kubernetes.default.svc
+      namespace: cert-manager
+    {{- end }}
+    {{- if and (eq $item.key "controlPlane") $root.Values.integrations.github.enabled }}
+    # The control-plane chart owns only the worker's namespaced build-control
+    # Role/Binding; builder Pods remain owned by the builder Application.
+    - server: https://kubernetes.default.svc
+      namespace: kuberploy-build-dind
+    - server: https://kubernetes.default.svc
+      namespace: {{ $root.Values.integrations.github.argoNamespace }}
+    {{- end }}
+    {{- if and (eq $item.key "controlPlane") $root.Values.integrations.registry.runtimePull.enabled }}
+    {{- range $root.Values.integrations.registry.runtimePull.namespaces }}
+    - server: https://kubernetes.default.svc
+      namespace: {{ . }}
+    {{- end }}
+    {{- end }}
+    {{- if eq $item.key "builder" }}
+    - server: https://kubernetes.default.svc
+      namespace: kuberploy-build-dind
+    {{- end }}
+  clusterResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  orphanedResources:
+    # Multiple independently reconciled releases intentionally share the
+    # protected control-plane namespace. Per-project orphan warnings there are
+    # false positives for sibling resources; dedicated namespaces keep them.
+    warn: {{ ne $item.namespace "kuberploy-system" }}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: {{ $item.application }}
+  namespace: argocd
+  annotations:
+    helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-wave: {{ $item.wave | quote }}
+    kuberploy.io/installation-mode: {{ $component.mode | quote }}
+    kuberploy.io/expected-package-version: {{ $component.expectedPackageVersion | quote }}
+    kuberploy.io/readiness-contract: application-health-is-not-runtime-readiness
+  labels:
+    {{- include "kuberploy-installer.labels" $root | nindent 4 }}
+    kuberploy.io/component: {{ $item.key | quote }}
+spec:
+  project: {{ $item.application }}
+  sources:
+    - repoURL: {{ $root.Values.source.chartRepository | quote }}
+      chart: {{ $item.chart | quote }}
+      targetRevision: {{ $component.expectedPackageVersion | quote }}
+      helm:
+        releaseName: {{ $item.release | quote }}
+        ignoreMissingValueFiles: false
+        {{- with $component.valueFiles }}
+        valueFiles:
+          {{- range . }}
+          - {{ printf "$values/%s" . | quote }}
+          {{- end }}
+        {{- end }}
+        valuesObject:
+          {{- toYaml $childValues | nindent 10 }}
+    - repoURL: {{ $root.Values.source.valuesRepository | quote }}
+      targetRevision: {{ $root.Values.source.valuesRevision | quote }}
+      ref: values
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: {{ $item.namespace }}
+  {{- if eq $item.key "postgresql" }}
+  # Kubernetes defaults these fields inside the immutable claim template.
+  # Ignore only those defaults; every operator-owned PostgreSQL field remains
+  # drift-enforced by Argo CD.
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      name: kuberploy-postgresql
+      namespace: kuberploy-system
+      jsonPointers:
+        - /spec/volumeClaimTemplates/0/apiVersion
+        - /spec/volumeClaimTemplates/0/kind
+        - /spec/volumeClaimTemplates/0/metadata/labels/helm.sh~1chart
+        - /spec/volumeClaimTemplates/0/spec/volumeMode
+        - /spec/volumeClaimTemplates/0/status
+  {{- end }}
+  syncPolicy:
+    {{- if $root.Values.applications.automated }}
+    automated:
+      allowEmpty: false
+      prune: {{ $root.Values.applications.prune }}
+      selfHeal: {{ $root.Values.applications.selfHeal }}
+    {{- end }}
+    syncOptions:
+      - CreateNamespace=true
+      - PruneLast=true
+      - RespectIgnoreDifferences=true
+      - ServerSideApply=true
+---
+{{ end }}
+{{ end }}

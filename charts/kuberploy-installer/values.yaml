@@ -1,0 +1,170 @@
+bootstrap:
+  valkey:
+    enabled: false
+  argoCD:
+    enabled: false
+    mode: disabled
+    # Managed Argo uses the separately owned Valkey service. This attests that
+    # the service and exact Argo credential Secret exist before Helm starts.
+    managedPrerequisitesConfirmed: false
+  controlPlaneToken:
+    # generated creates the one-time token in-cluster; precreated uses an
+    # operator-owned kuberploy-bootstrap Secret. Disabled is valid only while
+    # the control-plane Application is disabled.
+    mode: disabled
+    kubeAPIServerCIDRs: []
+
+source:
+  # Every child is installed from its release-packaged OCI chart using the
+  # component's explicit semantic version. Git is used only for optional,
+  # non-secret operator value files pinned to the matching release tag.
+  chartRepository: ghcr.io/kuberploy/charts
+  valuesRepository: ""
+  valuesRevision: ""
+
+applications:
+  automated: true
+  prune: true
+  selfHeal: true
+
+# Cluster facts are supplied explicitly in the installer Helm values and are
+# injected only into selected child charts that need direct Kubernetes API
+# access. They are not credentials and cannot be broad all-address ranges.
+cluster:
+  kubeAPIServerCIDRs: []
+
+# Optional public control-plane endpoint. Enabling it also requires the
+# control-plane and edge components. Installer-managed TLS additionally
+# requires managed cert-manager, an exact ClusterIssuer name, the target
+# Secret name, and a non-empty Let's Encrypt account email.
+publicEndpoint:
+  enabled: false
+  hostname: ""
+  tls:
+    enabled: false
+    secretName: ""
+    clusterIssuerName: ""
+    # Required when TLS is enabled; used for the ACME account registration.
+    accountEmail: ""
+
+# Closed, credential-free control-plane integration inputs. Secret bytes are
+# pre-created in kuberploy-system and are never copied into Helm values.
+integrations:
+  github:
+    enabled: false
+    appID: 0
+    clientID: ""
+    appSlug: ""
+    secretName: ""
+    clusterID: ""
+    platformBindingID: ""
+    argoNamespace: ""
+    psaVersion: ""
+    runtimeChartDigest: ""
+    buildKitImage: ""
+    # Exact current GitHub/API endpoints or stable operator egress proxies.
+    controlPlaneEgressCIDRs: []
+    sourceEgressCIDRs: []
+    registryEgressCIDRs: []
+  registry:
+    enabled: false
+    targetID: ""
+    targetName: ""
+    repositoryPrefix: ""
+    lifecycleCredentialRef: ""
+    lifecycleCredentialSecretName: ""
+    pullCredentialRef: ""
+    pushCredentialRef: ""
+    cacheCredentialRef: ""
+    controlPlaneEgressCIDRs: []
+    authSecretName: ""
+    secretRevision: ""
+    exposureMode: internal
+    endpoint: ""
+    tlsSecretName: ""
+    clusterIssuerName: ""
+    loadBalancer:
+      annotations: {}
+      class: ""
+      ip: ""
+      sourceRanges: []
+    # Optional private-pull authority for the managed registry. The source
+    # Secret is pre-created in kuberploy-system and contains one Docker config
+    # JSON value; credential bytes never enter Helm values or Argo resources.
+    runtimePull:
+      enabled: false
+      targetID: ""
+      profileName: ""
+      credentialRef: ""
+      revision: 0
+      sourceSecretName: ""
+      sourceSecretKey: ""
+      namespaces: []
+
+components:
+  controlPlane: &disabledComponent
+    enabled: false
+    mode: disabled
+    adoptionConfirmed: false
+    expectedPackageVersion: ""
+    # Paths are relative to the values repository root and must stay below
+    # examples/installer. They never change which OCI package is executed.
+    valueFiles: []
+  postgresql: *disabledComponent
+  valkey: *disabledComponent
+  edge: *disabledComponent
+  certManager: *disabledComponent
+  externalDNS: *disabledComponent
+  externalSecrets: *disabledComponent
+  sealedSecrets: *disabledComponent
+  monitoring: *disabledComponent
+  builder: *disabledComponent
+  registry: *disabledComponent
+
+# Values for the direct, same-namespace Argo CD bootstrap dependency. The
+# installer never rewrites these. They must satisfy kuberploy-argocd's own
+# managed/adopted validation and remain independently explicit.
+argoCD:
+  argoFoundation:
+    namespace:
+      create: true
+    argoCD:
+      managed: true
+      adoptExisting: false
+      crdsPreinstalledByParent: true
+      capabilitiesConfirmed: false
+    prerequisites:
+      argoSecretName: argocd-secret
+      valkeySecretName: kuberploy-argocd-valkey-auth
+    networkPolicy:
+      enabled: true
+      kubeAPIServerCIDRs: []
+      repositoryEgressCIDRs: []
+      valkeyNamespace: kuberploy-system
+      controlPlaneNamespace: kuberploy-system
+      edgeNamespace: kuberploy-system
+      monitoringNamespace: kuberploy-monitoring
+    bootstrap:
+      enabled: false
+      clusterID: ""
+      bindingID: ""
+      repositoryOwner: ""
+      repositoryName: ""
+      targetRevision: ""
+  argo-cd:
+    crds:
+      install: false
+
+# Direct blank-cluster bootstrap dependency. It remains owned by the installer
+# release in kuberploy-system so Argo CD never depends on a child Application
+# before its own controller can start.
+bootstrapvalkey:
+  valkeyFoundation:
+    managed: true
+    adoptExisting: false
+    namespace:
+      create: false
+    networkPolicy:
+      enabled: true
+      controlPlaneNamespace: kuberploy-system
+      argoCDNamespace: argocd
