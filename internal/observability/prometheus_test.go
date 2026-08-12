@@ -339,7 +339,7 @@ func TestQueryRangeEnforcesBodySeriesSampleAndNumberLimits(t *testing.T) {
 		{name: "body", body: `{"status":"success","data":{"resultType":"matrix","result":[]}}` + strings.Repeat(" ", 128), options: Options{MaxResponseBytes: 64}},
 		{name: "series", body: `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"namespace":"tenant"},"values":[]},{"metric":{"namespace":"tenant"},"values":[]}]}}`, options: Options{MaxSeries: 1}},
 		{name: "samples", body: `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"namespace":"tenant"},"values":[[1800000000,"1"],[1800000060,"2"],[1800000120,"3"],[1800000180,"4"],[1800000240,"5"],[1800000300,"6"],[1800000360,"7"]]}]}}`, options: Options{MaxSamples: 6}},
-		{name: "nan", body: `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"namespace":"tenant"},"values":[[1800000000,"NaN"]]}]}}`},
+		{name: "inf", body: `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"namespace":"tenant"},"values":[[1800000000,"+Inf"]]}]}}`},
 		{name: "trailing", body: `{"status":"success","data":{"resultType":"matrix","result":[]}} {}`},
 	}
 	for _, test := range tests {
@@ -360,6 +360,86 @@ func TestQueryRangeEnforcesBodySeriesSampleAndNumberLimits(t *testing.T) {
 			_, err = client.QueryRange(context.Background(), Scope{Type: ScopeNamespace, Namespace: "tenant"}, MetricCPUUsage, queryWindow())
 			if !errors.Is(err, ErrUnsafeResponse) {
 				t.Fatalf("error=%v", err)
+			}
+		})
+	}
+}
+
+func TestQueryRangeToleratesNaNGapsButRejectsInfinity(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		body    string
+		wantErr error
+		wantLen int
+		wantVal float64
+	}{
+		{
+			name:    "leading gap skipped",
+			body:    `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"namespace":"tenant"},"values":[[1800000000,"NaN"],[1800000060,"1.5"],[1800000120,"2.5"]]}]}}`,
+			wantLen: 2,
+			wantVal: 1.5,
+		},
+		{
+			name:    "interspersed gaps skipped",
+			body:    `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"namespace":"tenant"},"values":[[1800000000,"1"],[1800000060,"NaN"],[1800000120,"3"]]}]}}`,
+			wantLen: 2,
+			wantVal: 1,
+		},
+		{
+			name:    "trailing gap skipped",
+			body:    `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"namespace":"tenant"},"values":[[1800000000,"1"],[1800000060,"NaN"]]}]}}`,
+			wantLen: 1,
+			wantVal: 1,
+		},
+		{
+			name:    "all gaps yields empty series",
+			body:    `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"namespace":"tenant"},"values":[[1800000000,"NaN"],[1800000060,"NaN"]]}]}}`,
+			wantLen: 0,
+		},
+		{
+			name:    "positive infinity rejected",
+			body:    `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"namespace":"tenant"},"values":[[1800000000,"1"],[1800000060,"+Inf"]]}]}}`,
+			wantErr: ErrUnsafeResponse,
+		},
+		{
+			name:    "negative infinity rejected",
+			body:    `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"namespace":"tenant"},"values":[[1800000000,"1"],[1800000060,"-Inf"]]}]}}`,
+			wantErr: ErrUnsafeResponse,
+		},
+		{
+			name:    "non numeric rejected",
+			body:    `{"status":"success","data":{"resultType":"matrix","result":[{"metric":{"namespace":"tenant"},"values":[[1800000000,"1"],[1800000060,"not-a-number"]]}]}}`,
+			wantErr: ErrUnsafeResponse,
+		},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fmt.Fprint(w, test.body)
+			}))
+			defer server.Close()
+			client, err := NewClient(Options{BaseURL: server.URL, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := client.QueryRange(context.Background(), Scope{Type: ScopeNamespace, Namespace: "tenant"}, MetricCPUUsage, queryWindow())
+			if test.wantErr != nil {
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("error=%v want=%v", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Series) != 1 || len(result.Series[0].Samples) != test.wantLen {
+				t.Fatalf("samples=%v want=%d", result.Series[0].Samples, test.wantLen)
+			}
+			if test.wantLen > 0 && result.Series[0].Samples[0].Value != test.wantVal {
+				t.Fatalf("first value=%v want=%v", result.Series[0].Samples[0].Value, test.wantVal)
 			}
 		})
 	}

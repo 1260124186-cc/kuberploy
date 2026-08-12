@@ -598,7 +598,16 @@ func (c *Client) decodeMatrix(body []byte, expected map[string]string) ([]Series
 				return nil, ErrUnsafeResponse
 			}
 			value, parseErr := strconv.ParseFloat(encoded, 64)
-			if parseErr != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+			if parseErr != nil {
+				return nil, ErrUnsafeResponse
+			}
+			// Prometheus 用 "NaN" 表示采样间隙（例如比率类规则在窗口初期分母为零），
+			// 这是合法的缺失样本：跳过该点，后续有效样本继续返回。
+			// 无穷值仍属异常响应，严格拒绝整条序列。
+			if math.IsNaN(value) {
+				continue
+			}
+			if math.IsInf(value, 0) {
 				return nil, ErrUnsafeResponse
 			}
 			seconds, fraction := math.Modf(timestamp)
